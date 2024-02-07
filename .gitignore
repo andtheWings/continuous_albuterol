@@ -1,0 +1,7 @@
+
+.Rproj.user/
+_targets/
+data/
+
+*.html
+*_files/

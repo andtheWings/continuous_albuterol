@@ -1,0 +1,15 @@
+---
+title: "Sandbox"
+format: html
+---
+
+```{r}
+library(targets)
+library(tidyverse)
+```
+
+```{r}
+
+arrow::read_parquet("data/RileyAsthmaster.parquet")
+```
+
