@@ -6,10 +6,78 @@ format: html
 ```{r}
 library(targets)
 library(tidyverse)
+library(ggdist)
+library(janitor)
+library(gtsummary)
 ```
 
 ```{r}
+tar_load(asthmaster_mod)
 
-arrow::read_parquet("data/RileyAsthmaster.parquet")
+asthmaster_mod |> 
+    select(Albuterol_Cont_Dose, AgeAtEncounter, Weight, Race, Ethnicity, Sex, CCC, PneumoniaDx, Ipratropium, Magnesium_order, PASS_Initial, RR_Initial, O2_Initial, FiO2_Initial) |> 
+    tbl_summary(by = "Albuterol_Cont_Dose")
+```
+
+# Exploring Primary Relationship
+
+
+# Exploring Med Admin Duration
+
+```{r}
+
+
+
+
+
+asthmaster_mod |> filter(is.na(days_from_first_to_last_continuous) & Albuterol_Cont_admin == TRUE)
+```
+
+```{r}
+df |> filter(!is.na(days_from_first_to_last_continuous) & Albuterol_Cont_admin == FALSE)
+```
+
+```{r}
+df |> 
+    select(FIN, days_from_first_to_last_continuous, days_from_first_continuous_to_first_after)
+```
+```{r}
+df |> 
+    ggplot(aes(x = days_from_first_to_last_continuous)) +
+    geom_histogram()
+```
+
+```{r}
+df |> 
+    ggplot(aes(x = days_from_first_continuous_to_first_after)) +
+    geom_histogram()
+```
+
+```{r}
+df |> 
+    ggplot(aes(x = duration_diff)) +
+    geom_histogram()
+```
+
+
+```{r}
+asc <-
+    df |>
+    ungroup() |> 
+    arrange(desc(is_continuous)) |> 
+    group_by(FIN) |> 
+    summarise(first(start_time) - last(start_time)) |> 
+
+desc <-
+    df |>
+    ungroup() |> 
+    arrange(is_continuous) |> 
+    group_by(FIN) |> 
+    summarise(first(start_time) - last(start_time))
+
+class(df$duration)
+
+origin_med_admin |> 
+    filter(StrengthDoseUnit == "NULL")
 ```
 
