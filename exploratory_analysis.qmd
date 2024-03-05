@@ -28,6 +28,38 @@ asthmaster_mod |>
 
 ```{r}
 asthmaster_mod |> 
+    ggplot(aes(x = Year, y = Albuterol_Cont_Dose_Factor)) +
+    stat_dotsinterval()
+```
+
+```{r}
+df <- filter(asthmaster_mod, !is.na(Albuterol_Cont_Dose_Logit))
+
+df$Albuterol_Cont_Dose_Factor
+```
+
+
+```{r}
+model <- glm(Albuterol_Cont_Dose_Logit ~ Year, family = "binomial", data = df)
+
+model
+```
+
+
+```{r}
+parameters::parameters(model, exponentiate = TRUE)
+```
+
+
+```{r}
+asthmaster_mod |> 
+    ggplot(aes(x = Albuterol_Cont_Dose)) +
+    stat_dotsinterval()
+```
+
+
+```{r}
+asthmaster_mod |> 
     ggplot(aes(x = PASS_Initial, y = Albuterol_Cont_Dose)) +
     stat_dotsinterval()
 ```

@@ -6,14 +6,756 @@ format: html
 ```{r}
 library(targets)
 library(tidyverse)
+library(tidymodels)
 library(ggdist)
-library(janitor)
+# library(janitor)
 library(gtsummary)
+# library(performance)
+library(parameters)
+library(skimr)
+
+theme_set(theme_bw())
+set.seed(1989)
 ```
+
+# Explore the Data
+
+```{r}
+tar_load(asthmaster_mod) 
+
+asthmaster_mod |> count(Albuterol_Cont_Dose)
+```
+
+
+```{r}
+asthmaster_mod |> count(Albuterol_Cont_Dose_Factor)
+```
+
+```{r}
+asthmaster_mod |> 
+    filter(
+        !is.na(Albuterol_Cont_Dose_Factor)
+    ) |> 
+    select(
+        Albuterol_Cont_Dose_Factor,
+        Year,
+        AgeAtEncounter, 
+        Weight.VPS, 
+        Weight,
+        Race,
+        Race_Black, 
+        Ethnicity,
+        Ethnicity_Hispanic,
+        Sex,
+        Patient.Origin,
+        Ipratropium,
+        PneumoniaDx, 
+        ChronicLungdzDx, 
+        CCC, 
+        BPD,
+        HR_Initial, 
+        RR_Initial, 
+        O2_Initial, 
+        FiO2_Initial,
+        PASS_Initial,
+        Temp_Initial,
+        Resp_Initial
+    ) |> 
+    skim()
+```
+
+```{r}
+glm(
+    Albuterol_Cont_Dose_Factor ~ Ethnicity_Hispanic,
+    data = asthmaster_mod,
+    family = binomial
+) |> 
+    parameters(exponentiate = TRUE)
+```
+```{r}
+glm(
+    Albuterol_Cont_Dose_Factor ~ FiO2_Initial,
+    data = asthmaster_mod,
+    family = binomial
+) |> 
+    parameters(exponentiate = TRUE)
+```
+
+
+```{r}
+asthmaster_select <-
+    asthmaster_mod |> 
+    select(
+        Albuterol_Cont_Dose_Factor,
+        Year,
+        AgeAtEncounter, 
+        # Weight.VPS, 
+        # Weight,
+        # Race,
+        Race_Black, 
+        # Ethnicity,
+        # Ethnicity_Hispanic,
+        Sex,
+        # Patient.Origin,
+        Ipratropium,
+        PneumoniaDx, 
+        ChronicLungdzDx, 
+        CCC, 
+        BPD,
+        HR_Initial, 
+        RR_Initial, 
+        O2_Initial, 
+        # FiO2_Initial,
+        # PASS_Initial,
+        Temp_Initial,
+        Resp_Initial
+    ) |> 
+    na.omit()
+
+asthmaster_split <- initial_split(asthmaster_select, prop = 0.75, strata = Albuterol_Cont_Dose_Factor)
+asthmaster_train <- training(asthmaster_split)
+asthmaster_boot <- bootstraps(asthmaster_train)
+asthmaster_test <- testing(asthmaster_split)
+
+glm_spec <- logistic_reg(mode = "classification", engine = "glm")
+rf_spec <- 
+    rand_forest(
+        mode = "classification", 
+        engine = "ranger",
+        mtry = 4, # Sqrt of the number of features
+        trees = 200, # n_estimators
+        min_n = 2 # min_samples_split
+    )
+
+all_pred_workflow <- workflow() |> add_formula(Albuterol_Cont_Dose_Factor ~ .)
+
+glm_all <-
+    all_pred_workflow |> 
+    add_model(rf_spec) |> 
+    fit_resamples(
+        resamples = asthmaster_boot,
+        control = control_resamples(save_pred = TRUE)
+    )
+        
+collect_metrics(glm_all)
+asthmaster_boot
+```
+
+
+
+```{r}
+glm(
+    Albuterol_Cont_Dose_Factor ~ .,
+    data = asthmaster_select,
+    family = binomial
+) |> 
+    select_parameters()
+```
+
+
+
+# Year 
+
+```{r}
+asthmaster_mod |> 
+    ggplot(aes(y = Year, x = Albuterol_Cont_Dose_Logit)) +
+    geom_dotsinterval()
+
+glm(
+    Albuterol_Cont_Dose_Logit ~ Year,
+    data = asthmaster_mod,
+    family = binomial()
+) |> 
+    parameters(exponentiate = TRUE)
+```
+
+
+# Varible Exploration
+
+```{r}
+table(asthmaster_mod$Albuterol_Cont_Dose_Factor, useNA = "ifany")
+```
+```{r}
+table(asthmaster_mod$Albuterol_Cont_Dose_Logit, useNA = "ifany")
+```
+
+
+# Matching Model Design
+
+## New Approach
 
 ```{r}
 tar_load(asthmaster_mod)
 
+starting_variables <-
+    asthmaster_mod |> 
+    filter(
+        !is.na(Albuterol_Cont_Dose_Logit)
+    ) |> 
+    select(
+        #Albuterol_Cont_Dose,
+        Albuterol_Cont_Dose_Factor,
+        # Albuterol_Cont_Dose_Logit,
+        #FIN, MRN,
+        # ArriveDTS,
+        Year,
+        #DOB, 
+        AgeAtEncounter, 
+        #Weight.VPS, Weight,
+        # Race,
+        Race_Black, 
+        #Ethnicity, 
+        # Ethnicity_Hispanic, 
+        Sex,
+        #Patient.Origin,
+        Ipratropium,
+        PneumoniaDx, ChronicLungdzDx, CCC, BPD,
+        HR_Initial, RR_Initial, O2_Initial, 
+        # FiO2_Initial,
+        # PASS_Initial,
+        Temp_Initial,
+        Resp_Initial
+    ) |> 
+    na.omit()
+
+skim(starting_variables)
+```
+
+```{r}
+asthmaster_split <- initial_split(starting_variables, prop = 0.75, strata = Albuterol_Cont_Dose_Factor)
+
+asthmaster_train <- training(asthmaster_split)
+asthmaster_test <- testing(asthmaster_split)
+
+
+```
+
+
+
+```{r}
+
+
+full_glm <-
+    glm(
+        Albuterol_Cont_Dose_Factor ~ .,
+        data = asthmaster_train,
+        family = binomial()
+    )
+
+small_glm <-
+    glm(
+        Albuterol_Cont_Dose_Factor ~ AgeAtEncounter + Sex + HR_Initial + RR_Initial,
+        data = asthmaster_train,
+        family = binomial()
+    )
+
+
+```
+
+
+```{r}
+library(tidymodels)
+library(ranger)
+
+# Define the model specification
+rf_spec <- 
+    rand_forest(
+        mode = "classification",
+        engine = "ranger",
+        mtry = 4, # Sqrt of the number of features
+        trees = 200, # n_estimators
+        min_n = 2 # min_samples_split
+    ) 
+    
+full_rf_model <-
+    rf_spec |> 
+    fit(
+        Albuterol_Cont_Dose_Factor ~ .,
+        data = asthmaster_train,
+    )
+
+small_rf_model <-
+    rf_spec |> 
+    fit(
+        Albuterol_Cont_Dose_Factor ~ AgeAtEncounter + Sex + HR_Initial + RR_Initial,
+        data = asthmaster_train,
+    )
+
+full_rf_results <- 
+    full_rf_model |> 
+    augment(new_data = asthmaster_test)
+
+small_rf_results <-
+    small_rf_model |> 
+    augment(new_data = asthmaster_test)
+
+full_glm_results <-
+    full_glm |> 
+    augment(
+        newdata = asthmaster_test,
+        type.predict = "response"
+    ) |> 
+    mutate(
+        .fitted_factor = 
+            case_when(
+                .fitted < 0.5 ~ 10,
+                .fitted >= 0.5 ~ 15
+            ) |> 
+            factor(
+                levels = c(10, 15),
+                ordered = TRUE
+            )
+    )
+
+yardstick::metrics(rf_results, Albuterol_Cont_Dose_Factor, .pred_class)
+
+metrics(small_rf_results, Albuterol_Cont_Dose_Factor, .pred_class)
+```
+
+
+```{r}
+metrics(full_glm_results, Albuterol_Cont_Dose_Factor, .fitted_factor)
+
+
+
+```
+
+
+```{r}
+full_model |> 
+    parameters()
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+cont_alb_model <-
+    glm(
+        Albuterol_Cont_Dose_Logit ~ Year + AgeAtEncounter + Race_Black + Ethnicity + Sex + PneumoniaDx + CCC + Weight.VPS + HR_Initial + PASS_Initial,
+        na.action = na.exclude,
+        family = binomial(link = "logit"),
+        data = asthmaster_mod
+    )
+```
+
+
+## Deprecated
+
+```{r}
+tar_load(asthmaster_mod)
+
+make_logistic_model_variant <- function(asthmaster_mod_df, predictive_var) {
+    
+    form1 <- as.formula(paste0("Albuterol_Cont_Dose_Logit ~ ", predictive_var))
+    
+    glm(form1, family = "binomial", data = asthmaster_mod_df)
+    
+}
+
+variables <- c(
+    "AgeAtEncounter",
+    "Weight.VPS",
+    "Race",
+    "Race_Black",
+    "Ethnicity",
+    "Sex",
+    "PASS_Initial",
+    "O2_Initial",
+    "RR_Initial",
+    "HR_Initial",
+    "CCC",
+    "PneumoniaDx"
+
+)
+
+
+models <- 
+    map(
+    variables,
+    ~ make_logistic_model_variant(asthmaster_mod, .x) |> 
+        parameters::parameters()
+    )
+
+models 
+```
+```{r}
+Year <- glm(
+        Albuterol_Cont_Dose_Logit ~ Year, 
+        family = "binomial", 
+        data = asthmaster_mod
+    )
+
+
+twos <- list(
+    Year = glm(
+        Albuterol_Cont_Dose_Logit ~ Year, 
+        family = "binomial", 
+        data = asthmaster_mod
+    ),
+    Year_Age = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + AgeAtEncounter, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Black = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Race_Black, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_HR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + HR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_CCC = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + CCC, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Pneum = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + PneumoniaDx, 
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+)
+
+
+performance::compare_performance(
+    twos,
+    metrics = "common",
+    rank = TRUE
+)
+```
+```{r}
+threes <- list(
+    Year_Weight = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Black = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + Race_Black, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_HR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + HR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_CCC = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + CCC, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Pneum = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + PneumoniaDx, 
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+)
+
+performance::compare_performance(
+    threes,
+    metrics = "common",
+    rank = TRUE
+)
+```
+```{r}
+fours <- list(
+    Year_Weight_Age = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_Black = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + Race_Black, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_CCC = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + CCC, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_Pneum = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + PneumoniaDx, 
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+)
+
+performance::compare_performance(
+    fours,
+    metrics = "common",
+    rank = TRUE
+)
+```
+```{r}
+fives <- list(
+    Year_Weight_Age_HR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Black = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_CCC = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + CCC, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Pneum = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + PneumoniaDx, 
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+)
+
+performance::compare_performance(
+    fives,
+    metrics = "common",
+    rank = TRUE
+)
+```
+```{r}
+sixes <- list(
+    Year_Weight_Age_HR_Black = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Black_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Black_CCC = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + CCC, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Black_Pneum = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + PneumoniaDx, 
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+)
+
+performance::compare_performance(
+    sixes,
+    metrics = "common",
+    rank = TRUE
+)
+```
+```{r}
+sevens <- list(
+    Year_Weight_Age_HR_Black_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Black_RR_CCC = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial + CCC,
+            family = "binomial", 
+            data = asthmaster_mod
+    ),
+    Year_Weight_Age_HR_Black_RR_Pneum = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial + PneumoniaDx,
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+    
+)
+
+performance::compare_performance(
+    sevens,
+    metrics = "common",
+    rank = TRUE
+)
+```
+```{r}
+Year_Weight_Age_HR_Black_RR = glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    )
+
+performance::performance_accuracy(Year_Weight_Age_HR_Black_RR)
+```
+
+
+```{r}
+performance::performance(
+        glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+        )
+    )
+
+roc_df <-
+    glm(
+            Albuterol_Cont_Dose_Logit ~ Year + Weight.VPS + AgeAtEncounter + HR_Initial + Race_Black + RR_Initial, 
+            family = "binomial", 
+            data = asthmaster_mod
+    ) |>
+    performance::performance_roc()
+
+roc_df |> 
+    ggplot(aes(x = Specificity, y = Sensitivity)) +
+        geom_line(alpha = 0.9) +
+        geom_point(
+            aes(x, y),
+            color = "#CC3311",
+            shape = 19,
+            size = 3,
+            data = tibble(x = 0.301, y = 0.759)
+        ) +
+        # scale_color_manual(values = c("#EE7733", "#0077BB", "#CC3311", "#009988")) +
+        labs(
+            x = "1 - Specificity"
+        ) +
+    theme_bw()
+
+
+```
+
+
+```{r}
+asthmaster_mod |> 
+    select(Albuterol_Cont_Dose_Logit, Weight, Weight.VPS, AgeAtEncounter, HR_Initial, Race_Black, RR_Initial) |> 
+    summary()
+    filter(!is.na(Albuterol_Cont_Dose_Logit)) |> 
+    tabyl(Albuterol_Cont_Dose_Logit, HR_Initial)
+```
+
+
+```{r}
+broom::augment(Year_Weight_Age_HR_Black_RR)
+
+wrangle_model_roc <- function(logistic_model_obj) {
+    
+    augmented_model_frame <- broom::augment(logistic_model_obj)
+    
+    total <- nrow(augmented_model_frame)
+    observed_present <- sum(augmented_model_frame$Albuterol_Cont_Dose_Logit)
+    observed_absent <- total - observed_present
+    
+    df1 <-
+        augmented_model_frame |>
+        # as_tibble() |>
+        mutate(
+            higher_dose =
+                factor(
+                    if_else(
+                        Albuterol_Cont_Dose_Logit,
+                        "Observed", "Not Observed"
+                    ),
+                    levels = c("Observed", "Not Observed"),
+                    ordered = TRUE
+                )
+        )
+    
+    df2 <- tibble(threshold = seq(from = 0, to = 1, by = 0.01)) 
+    
+    tabylate_from_threshold <- function(observed_prediction_df, threshold) {
+        
+        observed_prediction_df |> 
+            mutate(
+                .predicted_present = 
+                    factor(
+                        if_else(
+                            .fitted > threshold,
+                            "Predicted", "Not Predicted"
+                        ),
+                        levels = c("Predicted", "Not Predicted"),
+                        ordered = TRUE
+                    )
+            ) |> 
+            tabyl(.predicted_present, higher_dose)
+    }
+    
+    
+    df3 <-
+        df2 |> 
+        mutate(
+            tabyl = 
+                map(
+                    .x = threshold,
+                    .f = ~tabylate_from_threshold(df1, .x)
+                ),
+            sensitivity = 
+                map_dbl(
+                    .x = tabyl,
+                    .f = ~ (.x[1,2] / observed_present)
+                ),
+            specificity = 
+                map_dbl(
+                    .x = tabyl,
+                    .f = ~ .x[2,3] / observed_absent
+                ),
+            accuracy = 
+                map_dbl(
+                    .x = tabyl,
+                    .f = ~ (.x[1,2] + .x[2,3]) / total
+                ),
+            balance = (sensitivity + specificity)/2
+        )
+    
+    
+    return(df3)
+    
+}
+
+
+test <- wrangle_model_roc(Year_Weight_Age_HR_Black_RR)
+```
+
+
+```{r}
 asthmaster_mod |> 
     select(Albuterol_Cont_Dose, AgeAtEncounter, Weight, Race, Ethnicity, Sex, CCC, PneumoniaDx, Ipratropium, Magnesium_order, PASS_Initial, RR_Initial, O2_Initial, FiO2_Initial) |> 
     tbl_summary(by = "Albuterol_Cont_Dose")
@@ -21,16 +763,51 @@ asthmaster_mod |>
 
 # Exploring Primary Relationship
 
+```{r}
+tar_load(asthmaster_mod)
+```
+
+```{r}
+asthmaster_mod |> 
+    ggplot(aes(x = PASSchange0_24, y = Albuterol_Cont_Dose_Factor)) +
+    stat_dotsinterval()
+```
+
 
 # Exploring Med Admin Duration
 
 ```{r}
+tar_load(asthmaster_raw)
+```
+
+
+```{r}
+source("R/add_albuterol_duration.R")
+
+
+asthmaster_raw |>
+    add_albuterol_duration(source_med_admin_raw) |> 
+    filter(
+        # !is.na(Albuterol_Cont_Dose) &
+        !is.na(Albuterol_Cont_days_from_first_to_last) &
+            is.na(Albuterol_Cont_days_from_first_to_first_non)
+    ) |>
+    select(FIN, starts_with("Albuterol")) |> 
+    view()
+    
+```
 
 
 
-
-
-asthmaster_mod |> filter(is.na(days_from_first_to_last_continuous) & Albuterol_Cont_admin == TRUE)
+```{r}
+asthmaster_mod |> 
+    filter(
+        # !is.na(Albuterol_Cont_Dose) &
+        !is.na(Albuterol_Cont_days_from_first_to_last) &
+            is.na(Albuterol_Cont_days_from_first_to_first_non)
+    ) |> 
+    select(FIN, starts_with("Albuterol")) |> 
+    view()
 ```
 
 ```{r}

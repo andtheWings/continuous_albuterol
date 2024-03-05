@@ -40,17 +40,28 @@ add_albuterol_duration <- function(asthmaster_raw_df, source_med_admin_raw_df) {
     
     final_df <-
         times |> 
-        select(FIN, Albuterol_Cont_days_from_first_to_last, Albuterol_Cont_days_from_first_to_first_non) |>
+        select(
+            FIN, 
+            Albuterol_Cont_days_from_first_to_last, 
+            Albuterol_Cont_days_from_first_to_first_non
+        ) |>
+        rowwise() |> 
         mutate(
-            Albuterol_Cont_avg_duration = (Albuterol_Cont_days_from_first_to_last + Albuterol_Cont_days_from_first_to_first_non) / 2,
-            Albuterol_Cont_duration_method_diff = Albuterol_Cont_days_from_first_to_first_non - Albuterol_Cont_days_from_first_to_last
+            Albuterol_Cont_avg_duration = mean(
+                c(Albuterol_Cont_days_from_first_to_last, Albuterol_Cont_days_from_first_to_first_non),
+                na.rm = TRUE
+            )
         ) |> 
+        ungroup() |> 
+        mutate(
+            Albuterol_Cont_duration_diff = Albuterol_Cont_days_from_first_to_first_non - Albuterol_Cont_days_from_first_to_last
+        ) |>
         right_join(asthmaster_raw_df, by = "FIN") |> 
         relocate(
             Albuterol_Cont_days_from_first_to_last, 
             Albuterol_Cont_days_from_first_to_first_non,
             Albuterol_Cont_avg_duration,
-            Albuterol_Cont_duration_method_diff, 
+            Albuterol_Cont_duration_diff,
             .after = Albuterol_Cont_Dose
         )
     

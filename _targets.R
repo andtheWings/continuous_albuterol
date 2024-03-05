@@ -49,8 +49,9 @@ list(
         name = asthmaster_mod,
         command = asthmaster_raw |> 
             add_albuterol_duration(source_med_admin_raw) |> 
-            filter(Albuterol_Cont_Dose %in% c(10, 15)) |> 
-            mutate(Albuterol_Cont_Dose = as.factor(Albuterol_Cont_Dose))
+            add_albuterol_dose_factor() |> 
+            add_black_race() |> 
+            add_ethnicity_hispanic()
     )
     
 )
