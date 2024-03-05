@@ -81,6 +81,19 @@ glm(
     parameters(exponentiate = TRUE)
 ```
 
+```{r}
+glm(
+    Albuterol_Cont_Dose_Factor ~ ChronicLungdzDx,
+    data = asthmaster_mod,
+    family = binomial
+) |> 
+    parameters(exponentiate = TRUE)
+```
+
+```{r}
+asthmaster_mod |> count(ChronicLungdzDx)
+```
+
 
 ```{r}
 asthmaster_select <-
@@ -99,7 +112,7 @@ asthmaster_select <-
         # Patient.Origin,
         Ipratropium,
         PneumoniaDx, 
-        ChronicLungdzDx, 
+        # ChronicLungdzDx, 
         CCC, 
         BPD,
         HR_Initial, 
@@ -117,7 +130,11 @@ asthmaster_train <- training(asthmaster_split)
 asthmaster_boot <- bootstraps(asthmaster_train)
 asthmaster_test <- testing(asthmaster_split)
 
-glm_spec <- logistic_reg(mode = "classification", engine = "glm")
+glm_spec <- 
+    logistic_reg(
+        mode = "classification", 
+        engine = "glm"
+    )
 rf_spec <- 
     rand_forest(
         mode = "classification", 
@@ -127,31 +144,122 @@ rf_spec <-
         min_n = 2 # min_samples_split
     )
 
-all_pred_workflow <- workflow() |> add_formula(Albuterol_Cont_Dose_Factor ~ .)
+workflow_all_pred <- workflow() |> add_formula(Albuterol_Cont_Dose_Factor ~ .)
 
-glm_all <-
-    all_pred_workflow |> 
+glm_all_pred <-
+    workflow_all_pred |> 
+    add_model(glm_spec) |> 
+    fit_resamples(
+        resamples = asthmaster_boot,
+        control = control_resamples(save_pred = TRUE)
+    )
+
+rf_all_pred <-
+    workflow_all_pred |> 
     add_model(rf_spec) |> 
     fit_resamples(
         resamples = asthmaster_boot,
         control = control_resamples(save_pred = TRUE)
     )
         
-collect_metrics(glm_all)
-asthmaster_boot
+collect_metrics(glm_all_pred)
 ```
 
-
-
+```{r}
+collect_metrics(rf_all_pred)
+```
 ```{r}
 glm(
     Albuterol_Cont_Dose_Factor ~ .,
-    data = asthmaster_select,
+    data = asthmaster_train,
     family = binomial
 ) |> 
     select_parameters()
 ```
+```{r}
+workflow_select_pred <- 
+    workflow() |> 
+    add_formula(Albuterol_Cont_Dose_Factor ~ Year + AgeAtEncounter + Race_Black + HR_Initial)
 
+glm_select_pred <-
+    workflow_select_pred |> 
+    add_model(glm_spec) |> 
+    fit_resamples(
+        resamples = asthmaster_boot,
+        control = control_resamples(save_pred = TRUE)
+    )
+
+rf_select_pred <-
+    workflow_select_pred |> 
+    add_model(rf_spec) |> 
+    fit_resamples(
+        resamples = asthmaster_boot,
+        control = control_resamples(save_pred = TRUE)
+    )
+
+collect_metrics(glm_select_pred)
+```
+
+```{r}
+collect_metrics(rf_select_pred)
+```
+```{r}
+conf_mat_resampled(rf_select_pred)
+```
+
+```{r}
+rf_select_pred |> 
+    collect_predictions() |> 
+    group_by(id) |> 
+    roc_curve(Albuterol_Cont_Dose_Factor, .pred_10) |> 
+    autoplot()
+```
+
+```{r}
+final_fit_glm_select_pred <-
+    workflow_select_pred |> 
+    add_model(glm_spec) |> 
+    last_fit(asthmaster_split)
+
+collect_metrics(final_fit_glm_select_pred)
+```
+```{r}
+asthmaster_ipw <-
+    final_fit_glm_select_pred$.workflow[[1]] |> 
+    augment(
+        new_data = asthmaster_mod,
+        type.predict = "response"
+    ) |> 
+    mutate(
+        ipw = (Albuterol_Cont_Dose_Logit / .pred_15) + ((1 - Albuterol_Cont_Dose_Logit) / (1 - .pred_15))
+    ) |> 
+    # select(
+    #     Albuterol_Cont_Dose_Factor,
+    #     .pred_class,
+    #     ipw,
+    #     PASSchange0_24
+    # ) |> 
+    # filter(
+    #     !is.na(ipw)
+    # ) |> 
+    arrange(desc(ipw))
+```
+
+
+```{r}
+asthmaster_ipw |> 
+    filter(!is.na(PASSchange0_24)) |> 
+    ggplot(aes(y = PASSchange0_24, x = Albuterol_Cont_Dose_Logit)) +
+    geom_dotsinterval()
+```
+
+
+```{r}
+lm(
+    PASSchange0_24 ~ Albuterol_Cont_Dose_Logit,
+    data = asthmaster_ipw
+)
+```
 
 
 # Year 
