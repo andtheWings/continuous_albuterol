@@ -8,9 +8,7 @@ library(targets)
 library(tidyverse)
 library(tidymodels)
 library(ggdist)
-# library(janitor)
 library(gtsummary)
-# library(performance)
 library(parameters)
 library(skimr)
 
@@ -125,7 +123,12 @@ asthmaster_select <-
     ) |> 
     na.omit()
 
-asthmaster_split <- initial_split(asthmaster_select, prop = 0.75, strata = Albuterol_Cont_Dose_Factor)
+asthmaster_split <- 
+    initial_split(
+        asthmaster_select, 
+        prop = 0.75, 
+        strata = Albuterol_Cont_Dose_Factor
+    )
 asthmaster_train <- training(asthmaster_split)
 asthmaster_boot <- bootstraps(asthmaster_train)
 asthmaster_test <- testing(asthmaster_split)
@@ -144,7 +147,9 @@ rf_spec <-
         min_n = 2 # min_samples_split
     )
 
-workflow_all_pred <- workflow() |> add_formula(Albuterol_Cont_Dose_Factor ~ .)
+workflow_all_pred <- 
+    workflow() |> 
+    add_formula(Albuterol_Cont_Dose_Factor ~ .)
 
 glm_all_pred <-
     workflow_all_pred |> 
@@ -232,33 +237,96 @@ asthmaster_ipw <-
     ) |> 
     mutate(
         ipw = (Albuterol_Cont_Dose_Logit / .pred_15) + ((1 - Albuterol_Cont_Dose_Logit) / (1 - .pred_15))
-    ) |> 
+    ) #|> 
     # select(
     #     Albuterol_Cont_Dose_Factor,
     #     .pred_class,
     #     ipw,
-    #     PASSchange0_24
-    # ) |> 
+    #     PASSchange0_24, 
+    #     Year,
+    #     Race_Black,
+    #     AgeAtEncounter,
+    #     HR_Initial
+    # ) |>
     # filter(
     #     !is.na(ipw)
-    # ) |> 
-    arrange(desc(ipw))
+    # ) |>
+    # arrange(desc(ipw))
 ```
 
 
 ```{r}
 asthmaster_ipw |> 
-    filter(!is.na(PASSchange0_24)) |> 
-    ggplot(aes(y = PASSchange0_24, x = Albuterol_Cont_Dose_Logit)) +
-    geom_dotsinterval()
+    filter(!is.na(PASSchange0_24) & !is.na(Albuterol_Cont_Dose_Factor)) |> 
+    ggplot(aes(x = PASSchange0_24, y = Albuterol_Cont_Dose_Factor)) +
+    stat_dotsinterval()
 ```
 
 
 ```{r}
 lm(
-    PASSchange0_24 ~ Albuterol_Cont_Dose_Logit,
+    PASSchange0_24 ~ Albuterol_Cont_Dose_Factor,
     data = asthmaster_ipw
-)
+) |> 
+    parameters()
+```
+```{r}
+lm(
+    PASSchange0_24 ~ Albuterol_Cont_Dose_Factor,
+    data = asthmaster_ipw,
+    weights = ipw
+) |> 
+    parameters()
+```
+```{r}
+asthmaster_ipw |> 
+    filter(!is.na(Hospital_LOS) & !is.na(Albuterol_Cont_Dose_Factor)) |> 
+    ggplot(aes(x = Hospital_LOS, y = Albuterol_Cont_Dose_Factor)) +
+    stat_dotsinterval() +
+    coord_cartesian(xlim = c(0, 10))
+```
+```{r}
+glm(
+    round(Hospital_LOS) ~ Albuterol_Cont_Dose_Factor,
+    data = asthmaster_ipw,
+    family = Gamma
+) |> 
+    parameters(exponentiate = TRUE)
+```
+```{r}
+MASS::glm.nb(
+    round(Hospital_LOS) ~ Albuterol_Cont_Dose_Factor,
+    data = asthmaster_ipw,
+    weights = ipw
+) |> 
+    parameters(exponentiate = TRUE)
+```
+```{r}
+summary(asthmaster_ipw$PICU.LOS.VPS)
+```
+
+
+```{r}
+asthmaster_ipw |> 
+    filter(!is.na(PICU.LOS.VPS) & !is.na(Albuterol_Cont_Dose_Factor)) |> 
+    ggplot(aes(x = PICU.LOS.VPS, y = Albuterol_Cont_Dose_Factor)) +
+    stat_dotsinterval() +
+    coord_cartesian(xlim = c(0, 10))
+```
+```{r}
+MASS::glm.nb(
+    round(PICU.LOS.VPS) ~ Albuterol_Cont_Dose_Factor,
+    data = asthmaster_ipw
+) |> 
+    parameters(exponentiate = TRUE)
+```
+```{r}
+MASS::glm.nb(
+    round(PICU.LOS.VPS) ~ Albuterol_Cont_Dose_Factor,
+    data = asthmaster_ipw,
+    weights = ipw
+) |> 
+    parameters(exponentiate = TRUE)
 ```
 
 
