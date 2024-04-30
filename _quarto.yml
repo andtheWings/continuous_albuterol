@@ -1,0 +1,12 @@
+project:
+  title: "continuous_albuterol"
+  output-dir: _output
+  render: 
+    - index.qmd
+
+format: docx
+# toc: true
+# number-sections: true
+bibliography: citations.bib
+execute: 
+  echo: false

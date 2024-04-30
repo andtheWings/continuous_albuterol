@@ -6,3 +6,17 @@ data/
 *.html
 *_files/
 *.pdf
+
+/.quarto/
+
+2-methods.qmd
+
+_output/
+
+3-results.qmd
+
+*.docx
+
+renv/
+
+reports/treatment_effects_cache/html/

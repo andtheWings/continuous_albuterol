@@ -1,0 +1,357 @@
+---
+title: "Choosing a Model for Assigning Inverse Probability Weights to Continuous Albuterol Treatment"
+author: "Daniel P. Hall Riggins, MD, MPH"
+date: today
+format: html
+execute: 
+  warning: false
+  error: false
+embed-resources: true
+code-fold: true
+df-print: paged
+---
+
+In this report, we are interested in modeling inverse probability weights for the treatment variable in our main analysis, that is, whether a patient admitted for asthma exacerbation received a peak continuous albuterol dose of 10 vs. 15 mg/hr. 
+
+# Libraries and Settings
+
+```{r}
+#| output: false
+
+# Standard Libraries
+library(targets)
+library(tidyverse)
+library(tidymodels)
+library(parameters)
+library(here)
+library(janitor)
+library(plotly)
+
+# Custom Function
+source(here("R", "tabyl_modified.R"))
+
+# Settings
+theme_set(theme_bw())
+set.seed(1989)
+i_am("reports/propensity_modeling.qmd")
+tar_config_set(store = here("_targets"))
+
+# Starting Data
+tar_load(asthmaster_modified)
+```
+
+# Explore the Data
+
+Production of this project's dataset has been specified in a targets pipeline you can view in my [Github repository](https://github.com/andtheWings/continuous_albuterol/blob/main/_targets.R). Note that the raw data itself is not accessible in the repository due to being protected health information.
+
+In the original dataset, there were a variety of peak continuous albuterol doses listed:
+
+```{r}
+tar_read(asthmaster_raw) |> 
+    tabyl_modified(Albuterol_Cont_Dose)
+```
+
+We have limited our analysis to the subset of patient encounters where the peak dose was either 10 or 15 mg/hr and have converted this variable to a factor.
+
+```{r}
+asthmaster_modified |> 
+    tabyl_modified(Albuterol_Cont_Dose_Factor)
+```
+
+We have selected a subset of possible modeling covariates that could plausibly have a causal influence on the probability of receiving treatment. Here we skim the characteristics of these possible covariates:
+
+```{r}
+asthmaster_modified |> 
+    select(
+        Year,
+        AgeAtEncounter, 
+        Weight.VPS, 
+        Weight,
+        Race,
+        Race_Black, 
+        Ethnicity,
+        Ethnicity_Hispanic,
+        Sex,
+        Patient.Origin,
+        Ipratropium,
+        PneumoniaDx, 
+        ChronicLungdzDx, 
+        CCC, 
+        BPD,
+        HR_Initial, 
+        RR_Initial, 
+        O2_Initial, 
+        FiO2_Initial,
+        PASS_Initial,
+        Temp_Initial,
+        Resp_Initial
+    ) |> 
+    skimr::skim()
+```
+
+The variables Patient.Origin, Weight/Weight.VPS, and PASS_Initial all have too many missing values to be useful in this scope. The variables Race/Race_Black, Ethnicity/Ethnicity_Hispanic, and FiO2_Initial all have a small amount of missing values. We could theoretically include them in modeling, but it would mean we'd have to throw away some observations, so let's cheat a little and see how strong their unadjusted associations are with the treatment variable in logistic regression models. 
+
+```{r}
+#| warning: false
+
+c("Race_Black", "Ethnicity_Hispanic", "FiO2_Initial") |> 
+    map(
+        ~ parameters(
+            glm(
+                formula(paste("Albuterol_Cont_Dose_Factor ~", .x)),
+                data = asthmaster_modified,
+                family = binomial
+            ),
+            exponentiate = TRUE
+        )
+    ) |>
+    reduce(bind_rows) |>
+    filter(Parameter != "(Intercept)")
+```
+It looks like the unadjusted association with Race_Black variable is strong, so it might be worth throwing away one missing observation to explore further. The other two variables don't have a strong enough unadjusted association to make it worth throwing away observations to use them.
+
+Let's create a more compact dataset just containing our treatment variable and prospective covariates for the model with missing observations dropped:
+
+```{r}
+asthmaster_compact <-
+    asthmaster_modified |> 
+    select(
+        FIN,
+        Albuterol_Cont_Dose_Factor,
+        Year,
+        AgeAtEncounter, 
+        # Weight.VPS, 
+        # Weight,
+        # Race,
+        Race_Black, 
+        # Ethnicity,
+        # Ethnicity_Hispanic,
+        Sex,
+        # Patient.Origin,
+        Ipratropium,
+        PneumoniaDx, 
+        ChronicLungdzDx,
+        CCC, 
+        BPD,
+        HR_Initial, 
+        RR_Initial, 
+        O2_Initial, 
+        # FiO2_Initial,
+        # PASS_Initial,
+        Temp_Initial,
+        Resp_Initial
+    ) |> 
+    na.omit()
+
+asthmaster_compact |> 
+    select(-FIN) |> 
+    glimpse()
+```
+
+# Model and Evaluate
+
+Now let's split our dataset into train and test sets then draw some bootstrap samples from the training set:
+
+```{r}
+asthmaster_split <- 
+    initial_split(
+        asthmaster_compact, 
+        prop = 0.75, 
+        strata = Albuterol_Cont_Dose_Factor
+    )
+asthmaster_train <- training(asthmaster_split)
+asthmaster_test <- testing(asthmaster_split)
+
+asthmaster_boot <- bootstraps(asthmaster_train)
+```
+
+We are going to try out four different models based on two different methods (logistic regression vs. random forest) and two different predictor sets (all predictors vs. subset chosen by automated stepwise search).
+
+Here we specify the two methods. Note that we will be tuning the mtry and min_n hyperparameters for the random forest models:
+
+```{r}
+logistic_spec <- 
+    logistic_reg(
+        mode = "classification", 
+        engine = "glm"
+    )
+
+rf_spec <-
+    rand_forest(
+        mode = "classification",
+        engine = "ranger",
+        trees = 500,
+        mtry = tune(),
+        min_n = tune()
+    )
+```
+
+
+Here we identify which subset of predictors seem most important:
+
+```{r}
+parameters(
+    select_parameters(
+        glm(
+            Albuterol_Cont_Dose_Factor ~ .,
+            data = asthmaster_train,
+            family = binomial
+        )
+    ),
+    exponentiate = TRUE
+)
+```
+And specify our predictor sets:
+
+```{r}
+all_pred_spec <- formula("Albuterol_Cont_Dose_Factor ~ . - FIN")
+
+subset_pred_spec <- formula("Albuterol_Cont_Dose_Factor ~ Year + AgeAtEncounter + Race_Black + HR_Initial + RR_Initial")
+```
+
+Here we fit our two logistic regression models:
+
+```{r}
+logistic_all <-
+    workflow() |> 
+    add_model(logistic_spec) |> 
+    add_formula(all_pred_spec) |> # All Predictors
+    fit_resamples(
+        resamples = asthmaster_boot,
+        control = control_resamples(save_pred = TRUE)
+    )
+    
+logistic_subset <-
+    workflow() |> 
+    add_model(logistic_spec) |> 
+    add_formula(subset_pred_spec) |> # Subset of Predictors
+    fit_resamples(
+        resamples = asthmaster_boot,
+        control = control_resamples(save_pred = TRUE)
+    )
+```
+
+Fitting random forest models while tuning hyperparameters is a computationally expensive process so I have run this ahead of time and load the results into this report. As a quick aside, let's visualize different combinations of hyperparameters (mtry and min_n) to see how they impact performance (mean_roc_auc). The interactive 3D plot below shows that a combination of mtry = 2 and min_n = 36 have created the best performing model on average with mean_roc_auc = 0.77 (you may need to rotate the plot a little to see this clearly):
+
+```{r}
+# rf_all <-
+#     workflow() |>
+#     add_model(rf_spec) |> 
+#     add_formula(all_pred_spec) |> 
+#     tune_grid(
+#         resamples = asthmaster_boot,
+#         grid = 25
+#     )
+# 
+# rf_subset <-
+#     workflow() |> 
+#     add_model(rf_spec) |> 
+#     add_formula(subset_pred_spec) |> 
+#     tune_grid(
+#         resamples = asthmaster_boot,
+#         grid = 25
+#     )
+
+
+rf_all <- tar_read(tunes_ipw_all_rf)
+rf_subset <- tar_read(tunes_ipw_subset_rf)
+
+rf_subset |> 
+    collect_metrics() |>
+    filter(.metric == "roc_auc") |>
+    select(mean_roc_auc = mean, min_n, mtry) |> 
+    plot_ly(
+        x = ~min_n,
+        y = ~mtry,
+        z = ~mean_roc_auc,
+        type = "scatter3d", 
+        mode = "markers"
+    )
+
+```
+
+Next, we collect performance metrics from the models and compare them. Sidenote: the strength of the tidymodels framework is that it establishes generic, flexible methods for workflows across diverse models. The drawback is that the code to accomplish any given task can get a little complicated (as seen below).
+
+```{r}
+logistic_results <-
+    map2(
+        .x = list(logistic_all, logistic_subset),
+        .y = c("logistic_all", "logistic_subset"),
+        .f = 
+            ~collect_metrics(.x) |> 
+            select(.metric, mean) |> 
+            pivot_wider(
+                names_from = .metric,
+                values_from = mean,
+                names_prefix = "mean_"
+            ) |> 
+            slice_max(mean_roc_auc, n = 1) |> 
+            mutate(model = .y, .before = mean_accuracy)
+    ) |> 
+    reduce(bind_rows)
+
+rf_results <-
+    map2(
+        .x = list(rf_all, rf_subset),
+        .y = c("rf_all", "rf_subset"),
+        .f = 
+            ~collect_metrics(.x) |> 
+            select(mtry, min_n, .metric, mean) |> 
+            pivot_wider(
+                id_cols = c(mtry, min_n),
+                names_from = .metric,
+                values_from = mean,
+                names_prefix = "mean_"
+            ) |> 
+            slice_max(mean_roc_auc, n = 1) |> 
+            mutate(model = .y, .before = mtry)
+    ) |> 
+    reduce(bind_rows)
+
+reduce(
+    .x = list(logistic_results, rf_results),
+    .f = bind_rows
+) |> 
+    relocate(mean_roc_auc, .before = mean_accuracy) |> 
+    arrange(desc(mean_roc_auc))
+```
+
+The random forest model using a subset of predictors performs best on average when evaluated on a set of bootstrapped split samples drawn from the training data. Let's fit this model on the entire training set of data, then evaluate it on the reserved test set of data (which we have not touched so far):
+
+```{r}
+final_model <-
+    workflow() |>
+    add_formula(subset_pred_spec) |>
+    add_model(
+        finalize_model(
+            rf_spec,
+            select_best(rf_subset, metric = "roc_auc")
+        )
+    ) |>
+    last_fit(asthmaster_split)
+
+final_model |> 
+    collect_metrics() |> 
+    select(.metric, .estimate)
+```
+
+The performance results are more or less in line with what we estimated previously with an accuracy of 0.76 of and area under the curve of 0.78.
+
+# Calculate IPW
+
+At long last, we can use this model to calculate inverse probability weights (IPW) for each encounter in the original dataset. Higher IPW values correspond to encounters where the observed dose of continuous albuterol was unexpected based on our model's predictions. For example, the top row gets a very high IPW because the observed dose was 10 mg/hr, but the model predicted a 93% probability that the dose would be 15 mg/hr based on the year, age, race, initial heart rate, and initial breathing rate of the patient:
+
+```{r}
+final_model$.workflow[[1]] |> 
+    augment(new_data = asthmaster_compact) |> 
+    select(FIN, .pred_15) |> 
+    inner_join(asthmaster_modified, by = "FIN") |> 
+    mutate(
+        ipw = (Albuterol_Cont_Dose_Logit / .pred_15) + ((1 - Albuterol_Cont_Dose_Logit) / (1 - .pred_15)),
+        .after = .pred_15
+    ) |> 
+    select(observed_albuterol_dose = Albuterol_Cont_Dose_Factor, pred_prob_of_15_dose = .pred_15, ipw, Year, AgeAtEncounter, Race_Black, HR_Initial, RR_Initial) |> 
+    arrange(desc(ipw))
+```
+
+

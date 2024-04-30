@@ -1,0 +1,488 @@
+---
+title: "Untitled"
+author: "Daniel P. Hall Riggins, MD, MPH"
+date: today
+format: html
+execute: 
+  warning: false
+  error: false
+embed-resources: true
+code-fold: true
+df-print: paged
+---
+
+In this report, we are interested in modeling the effect of our treatment variable on a set of clinical outcomes. The treatment variable is whether a patient admitted for asthma exacerbation received a peak continuous albuterol dose of 10 vs. 15 mg/hr. The primary outcome of interest is the change in pediatric asthma severity score (PASS). Other outcomes of interest include the length of continuous albuterol administration, PICU length of stay, and hospital length of stay.
+
+# Libraries and Settings
+
+```{r}
+#| output: false
+
+# Standard Libraries
+library(targets)
+library(tidyverse)
+library(broom)
+# library(quantreg)
+# library(bestNormalize)
+# library(ggdist)
+library(parameters)
+library(performance)
+library(here)
+# library(janitor)
+
+# Custom Function
+# source(here("R", "tabyl_modified.R"))
+
+# Settings
+theme_set(theme_bw())
+set.seed(1989)
+i_am("reports/propensity_modeling.qmd")
+tar_config_set(store = here("_targets"))
+
+# Starting Data
+tar_load(asthmaster_modified)
+tar_load(asthmaster_ipw)
+
+asthmaster_pass <-
+    asthmaster_ipw |> 
+    filter(!is.na(PASSchange0_24_percent))
+
+asthmaster_picu <-
+    asthmaster_ipw |> 
+    filter(!is.na(PICU.LOS.VPS))
+```
+
+# Explore the Data
+
+Our research question was motivated by natural trends and some departmental policy changes at Riley that gradually led to a shift in maximum dosage of continuous albuterol from 15 mg/hr to 10 mg/hr, seen in the time series below:
+
+```{r}
+
+bayestestR::point_estimate(asthmaster_modified$PASSchange0_24_percent)
+
+year_counts <-
+    tar_read(asthmaster_modified) |> 
+    count(Year) |> 
+    rename(year_count = n)
+
+
+# ggplotly(
+    asthmaster_modified |> 
+    count(Year, Albuterol_Cont_Dose_Factor) |> 
+    left_join(year_counts, by = "Year") |> 
+    mutate(percentage = n / year_count * 100) |> 
+    ggplot(aes(x = Year, linetype = Albuterol_Cont_Dose_Factor, y = percentage)) +
+    geom_line() +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+        y = "Yearly Percentage",
+        linetype = "Initial Dose of Continuous \n Albuterol (mg/hr)"
+    )
+# )
+```
+
+
+In order to evaluate the change in PASS, we need to make some modeling choices:
+
+- Over what time period should we determine the change in PASS?
+- Should we evaluate the raw change in PASS or relative change?
+
+Let's start by skimming the PASSchange variables (we'll include the other outcomes for reference as well):
+
+```{r}
+asthmaster_effects |> 
+    select(
+        PICU.LOS.VPS, # PICU length of stay
+        Hospital_LOS,
+        Albuterol_Cont_avg_duration, # Average of two methods for calculating length of cont albuterol admin
+        starts_with("PASSchange") # Change in PASS
+    ) |> 
+    skimr::skim()
+```
+
+We have lots of PASS change intervals to choose from. The notation for these variables shows the starting hour as the first number and the ending hour as the second number after the underscore. So PASSchange4_12 indicates the change in PASS from index hour 4 to index hour 12. For sake of simplicity, lets say we're only interested in the choices that start at index hour 0. Based on quantile values, it seems like the largest absolute change happens after 48 hours, but we have a large chunk of missing values for the change at index hour 48. Furthermore, the mean and median values for duration of continuous albuterol are both less than a day, so to get a more accurate causal picture of the effects of continuous albuterol, the change at index hour 24 might more useful anyway.
+
+So we've decided to use PASS change at index hour 24 as our primary outcome. But should we use absolute or relative change? This is a subjective decision, but I think it's more useful to think about relative change since different patients will be starting the encounter at different levels of severity. So we'll use relative change for the primary outcome, but also use absolute change for the sake of sensitivity analysis.
+
+Let's visualize how our outcomes differ between the albuterol dosage groups (10 vs. 15 mg/hr). For both groups, the PASS change outcome is centered at a negative change with significant bumps at zero change and a right skew into positive change. The lower peak dose of albuterol seems associated with a greater relative reduction in PASS:
+
+
+```{r}
+#| cache: true
+plot_outcome_density <- function(asthmaster_tbl_df, outcome_var, outcome_label = "") {
+    asthmaster_tbl_df |> 
+    ggplot(aes(x = {{ outcome_var }}, color = Albuterol_Cont_Dose_Logit, fill = Albuterol_Cont_Dose_Logit)) +
+    geom_density(alpha = 0.33) +
+    labs(
+        x = outcome_label,
+        fill = "Initial Dose of Continuous \n Albuterol (mg/hr)",
+        color = "Initial Dose of Continuous \n Albuterol (mg/hr)"
+    )
+}
+
+plot_outcome_violindot <- function(asthmaster_tbl_df, outcome_var, outcome_label = "") {
+    asthmaster_tbl_df |> 
+    ggplot(aes(y = {{ outcome_var }}, x = Albuterol_Cont_Dose_Factor)) +
+    see::geom_violindot() +
+    labs(
+        y = outcome_label,
+        x = "Initial Dose of Continuous Albuterol"
+    )
+}
+
+plot_outcome_ridges <- function(asthmaster_tbl_df, outcome_var, outcome_label = "") {
+    asthmaster_tbl_df |> 
+    ggplot(aes(x = Albuterol_Cont_Dose_Factor, y = {{ outcome_var }})) +
+    ggridges::geom_density_ridges() +
+    labs(
+        y = outcome_label,
+        x = "Initial Dose of Continuous Albuterol"
+    )
+}
+
+
+asthmaster_modified |> 
+    plot_outcome_density(Hospital_LOS_discrete_hrs)
+```
+
+
+
+
+All three length of time outcomes show significant right skews in what could be characterized as gamma distributions. For all three outcomes, the lower peak albuterol dose seems associated with lower lengths of time:
+
+```{r}
+#| cache: true
+
+# ggplotly(
+    asthmaster_modified |> 
+    plot_outcome_box(
+        Albuterol_Cont_hrs_duration,
+        outcome_label = "Length of Continuous Albuterol Administration (Hrs)",
+        y_position_num = c(70, 70),
+        extend_line_num = -0.48,
+        tip_length_num = 0.005
+    ) +
+    coord_cartesian(ylim = c(0, 100))
+# )
+```
+
+<!-- # ```{r} -->
+<!-- # asthmaster_effects |>  -->
+<!-- #     plot_outcome_density(discreteAlbuterol_Cont_avg_duration, "Length of Continuous Albuterol Administration (discrete hours)") + -->
+<!-- #     coord_cartesian(xlim = c(0, 180)) -->
+<!-- # ``` -->
+
+
+```{r}
+#| cache: true
+
+# ggplotly(
+    
+asthmaster_picu |> 
+    plot_outcome_box(
+        PICU.LOS.VPS,
+        outcome_label = "Length of PICU Stay (Hrs)",
+        y_position_num = c(27, 27),
+        extend_line_num = -0.48
+    ) +
+    coord_cartesian(ylim = c(0, 30))
+    
+# )
+```
+
+```{r}
+#| cache: true
+    
+asthmaster_modified |> 
+    plot_outcome_box(
+        Hospital_LOS,
+        outcome_label = "Length of Hospital Stay (Hrs)",
+        y_position_num = c(26, 26),
+        extend_line_num = -0.48,
+        tip_length_num = 0.015
+    ) +
+    coord_cartesian(ylim = c(0, 30))
+
+# ggplotly(
+    asthmaster_effects |> 
+    plot_outcome_density(Hospital_LOS, "Length of Hospital Stay (days)") +
+    coord_cartesian(xlim = c(0, 7.5))
+# )
+```
+# Create Models
+
+```{r}
+lm(
+        PASSchange0_24_percent ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude
+    ) |>  summary()
+```
+
+
+```{r}
+lm(
+        PASSchange0_24_percent ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        weights = ipw_stabilized,
+        na.action = na.exclude
+    ) |> summary()
+```
+
+
+```{r}
+lm(
+        PASSchange0_24_percent ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        weights = ipw_ate,
+        na.action = na.exclude
+    ) |> summary()
+```
+
+```{r}
+MASS::glm.nb(
+        Albuterol_Cont_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length Continuous Albuterol (unweighted)")
+```
+
+```{r}
+MASS::glm.nb(
+        Albuterol_Cont_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_ate
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length Continuous Albuterol (weighted)")
+```
+```{r}
+MASS::glm.nb(
+        Albuterol_Cont_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_stabilized
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length Continuous Albuterol (stabilized)")
+```
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length PICU (unweighted)")
+```
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_ate
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length PICU (weighted)")
+```
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_stabilized
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length PICU (stabilized)")
+```
+
+```{r}
+MASS::glm.nb(
+        Hospital_LOS_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length Hospital (unweighted)")
+```
+```{r}
+MASS::glm.nb(
+        Hospital_LOS_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_ate
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length Hospital (weighted)")
+```
+```{r}
+MASS::glm.nb(
+        Hospital_LOS_discrete_hrs ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_stabilized
+    ) |> 
+    parameters(exponentiate = TRUE) |> 
+    print_html(title = "Length Hospital (stabilized)")
+```
+
+
+<details>
+
+```{r}
+check_model(model_pass)
+```
+
+```{r}
+check_normality(model_pass) |> plot()
+```
+```{r}
+bestNormalize::bestNormalize(asthmaster_pass$percentPASSchange0_24)
+```
+```{r}
+asthmaster_pass$transformedPASSchange0_24 <- bestNormalize::yeojohnson(asthmaster_pass$percentPASSchange0_24)$x.t
+
+asthmaster_pass |> 
+    plot_outcome_density(transformedPASSchange0_24, "Yeo-Johnson-Transformed Change in PASS at Index Hour 24")
+```
+
+
+```{r}
+model_pass_t <-
+    lm(
+        transformedPASSchange0_24 ~ Cont_Albuterol_Dose,
+        data = asthmaster_pass,
+        weights = ipw
+    ) 
+```
+
+```{r}
+check_normality(model_pass_t) |> plot()
+```
+```{r}
+model_pass_t |> 
+parameters() |> 
+print_html(title = "Relative Change in PASS at Index Hour 24 (%)")
+```
+
+
+```{r}
+rq(
+    percentPASSchange0_24 ~ Cont_Albuterol_Dose,
+    tau = 0.5,
+    data = asthmaster_pass,
+    weights = ipw
+) |> 
+parameters() |> 
+print_html(title = "Quant Reg for Median Relative Change in PASS at Index Hour 24 (%)")
+```
+
+
+```{r}
+quantreg_estimates <-
+    map(
+        .x = seq(0.05, 0.95, by = 0.01),
+        .f = 
+            ~ rq(
+                percentPASSchange0_24 ~ Cont_Albuterol_Dose,
+                tau = .x,
+                data = asthmaster_pass,
+                weights = ipw
+            ) |> 
+            tidy(se = "boot") |> 
+            filter(str_detect(term, "Cont_Albuterol_Dose15")) |> 
+            select(tau, estimate, std.error, p.value) |> 
+            mutate(
+                lower = estimate - (1.96 * std.error),
+                upper = estimate + (1.96 * std.error)
+            )
+    ) |> 
+    reduce(bind_rows) |> 
+    filter(estimate != 0)
+
+quantreg_estimates |> 
+    ggplot(aes(x = tau, y = estimate)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+    labs(
+        x = "Quantile",
+        y = "Relative Dose Effect of Albuterol on PASS (%)"
+    )
+    
+```
+</details>
+
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude
+) |> 
+parameters(exponentiate = TRUE) |> 
+print_html(title = "PICU Length of Stay (discrete hrs)")
+```
+
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude
+) |> 
+parameters(exponentiate = TRUE) |> 
+print_html(title = "PICU Length of Stay (discrete hrs)")
+```
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_stabilized
+) |> 
+parameters(exponentiate = TRUE) |> 
+print_html(title = "PICU Length of Stay (discrete hrs)")
+```
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_ipw,
+        na.action = na.exclude,
+        weights = ipw_ate
+) |> 
+parameters(exponentiate = TRUE) |> 
+print_html(title = "PICU Length of Stay (discrete hrs)")
+```
+
+
+```{r}
+MASS::glm.nb(
+        PICU.LOS.VPS_discrete ~ Albuterol_Cont_Dose_Logit,
+        data = asthmaster_modified,
+        na.action = na.exclude
+) |> 
+parameters(exponentiate = TRUE) |> 
+print_html(title = "PICU Length of Stay (discrete hrs)")
+```
+
+
+```{r}
+MASS::glm.nb(
+        discreteHospital_LOS ~ Cont_Albuterol_Dose,
+        data = asthmaster_effects,
+        weights = ipw
+) |> 
+parameters(exponentiate = TRUE) |> 
+print_html(title = "Hospital Length of Stay (discrete hrs)")
+```
+
+
+
+
