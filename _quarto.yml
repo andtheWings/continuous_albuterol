@@ -1,6 +1,5 @@
 project:
   title: "continuous_albuterol"
-  output-dir: _output
   render: 
     - index.qmd
 

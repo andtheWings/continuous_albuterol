@@ -1,4 +1,4 @@
-Estimating the Effects of Continuous Albuterol Dosage on Clinical Outcomes for Pediatric Asthma Exacerbation: A Retrospective Cohort Study
+Estimating the Effects of Continuous Albuterol Dosage on Clinical Outcomes for Pediatric Critical Asthma: A Retrospective Cohort Study
 =====
 
 {{< include 2-methods.qmd >}}
